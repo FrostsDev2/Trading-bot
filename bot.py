@@ -1,3 +1,4 @@
+# FIXED
 import os
 import discord
 from discord.ext import commands
@@ -14,22 +15,35 @@ intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # 🎨 Embed color (light purple/pink)
-EMBED_COLOR = 0xE6A6FF
+COLOR = 0xE6A6FF
+
 
 # -----------------------------
-# HELPER
+# SAFE DATA FETCH (IMPORTANT FIX)
 # -----------------------------
 def get_data(symbol, interval="1h", period="1mo"):
-    data = yf.download(symbol, interval=interval, period=period)
-    if data.empty:
+    try:
+        df = yf.download(symbol, interval=interval, period=period)
+
+        if df is None or df.empty:
+            return None
+
+        df = df.copy()
+
+        for col in ["Open", "High", "Low", "Close", "Volume"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        df = df.dropna()
+
+        if df.empty:
+            return None
+
+        return df.astype(float)
+
+    except:
         return None
 
-    # Clean data (fix mplfinance crash)
-    data = data[["Open", "High", "Low", "Close", "Volume"]]
-    data = data.apply(pd.to_numeric, errors='coerce')
-    data.dropna(inplace=True)
-
-    return data if not data.empty else None
 
 # -----------------------------
 # READY
@@ -39,81 +53,84 @@ async def on_ready():
     await bot.tree.sync()
     print(f"Logged in as {bot.user}")
 
+
 # -----------------------------
 # /help
 # -----------------------------
 @bot.tree.command(name="help", description="Show all commands")
 async def help_cmd(interaction: discord.Interaction):
     embed = discord.Embed(
-        title="📊 Trading Bot Help",
+        title="📊 Trading Bot Commands",
+        color=COLOR,
         description="""
-/price symbol  
-/chart symbol interval  
-/indicators symbol interval  
-/signal symbol  
-/forex pair  
-/commodity oil|gold  
-/options symbol  
+/price symbol
+/chart symbol interval
+/indicators symbol interval
+/signal symbol
+/forex pair
+/commodity oil|gold
+/options symbol
 
 📈 Intervals: 1m, 5m, 15m, 1h, 1d
-""",
-        color=EMBED_COLOR
+"""
     )
     await interaction.response.send_message(embed=embed)
+
 
 # -----------------------------
 # /price
 # -----------------------------
-@bot.tree.command(name="price", description="Get price")
+@bot.tree.command(name="price", description="Get asset price")
 async def price(interaction: discord.Interaction, symbol: str):
     data = yf.Ticker(symbol).history(period="1d")
 
     if data.empty:
         return await interaction.response.send_message(
-            embed=discord.Embed(
-                description="❌ Invalid symbol",
-                color=EMBED_COLOR
-            )
+            embed=discord.Embed(description="❌ Invalid symbol", color=COLOR)
         )
 
     price = data["Close"].iloc[-1]
 
     embed = discord.Embed(
-        title=f"📊 {symbol.upper()} Price",
+        title=f"📊 {symbol.upper()}",
         description=f"**${price:.2f}**",
-        color=EMBED_COLOR
+        color=COLOR
     )
 
     await interaction.response.send_message(embed=embed)
 
+
 # -----------------------------
-# /chart
+# /chart (FIXED CLEAN VERSION)
 # -----------------------------
 @bot.tree.command(name="chart", description="Candlestick chart")
 async def chart(interaction: discord.Interaction, symbol: str, interval: str = "1h"):
     await interaction.response.defer()
 
-    valid_intervals = ["1m", "5m", "15m", "1h", "1d"]
-    if interval not in valid_intervals:
+    valid = ["1m", "5m", "15m", "1h", "1d"]
+    if interval not in valid:
         return await interaction.followup.send(
-            embed=discord.Embed(
-                description="❌ Invalid interval",
-                color=EMBED_COLOR
-            )
+            embed=discord.Embed(description="❌ Invalid interval", color=COLOR)
         )
 
     data = get_data(symbol, interval)
 
     if data is None:
         return await interaction.followup.send(
-            embed=discord.Embed(
-                description="❌ No data found",
-                color=EMBED_COLOR
-            )
+            embed=discord.Embed(description="❌ No valid data", color=COLOR)
         )
+
+    # 🎨 Chart style (black TradingView-like)
+    mc = mpf.make_marketcolors(
+        up="lime",
+        down="red",
+        wick="white",
+        volume="inherit"
+    )
 
     style = mpf.make_mpf_style(
         base_mpf_style="nightclouds",
+        marketcolors=mc,
         facecolor="black",
         gridcolor="gray"
     )
@@ -130,11 +147,13 @@ async def chart(interaction: discord.Interaction, symbol: str, interval: str = "
     )
 
     embed = discord.Embed(
-        title=f"📈 {symbol.upper()} Chart ({interval})",
-        color=EMBED_COLOR
+        title=f"📈 {symbol.upper()} Chart",
+        description=f"Interval: {interval}",
+        color=COLOR
     )
 
     await interaction.followup.send(embed=embed, file=discord.File(file))
+
 
 # -----------------------------
 # /indicators
@@ -145,7 +164,7 @@ async def indicators(interaction: discord.Interaction, symbol: str, interval: st
 
     if data is None:
         return await interaction.response.send_message(
-            embed=discord.Embed(description="❌ No data", color=EMBED_COLOR)
+            embed=discord.Embed(description="❌ No data", color=COLOR)
         )
 
     close = data["Close"]
@@ -156,54 +175,57 @@ async def indicators(interaction: discord.Interaction, symbol: str, interval: st
 
     embed = discord.Embed(
         title=f"📊 {symbol.upper()} Indicators",
-        color=EMBED_COLOR
+        color=COLOR
     )
+
     embed.add_field(name="RSI", value=f"{rsi:.2f}")
     embed.add_field(name="MACD", value=f"{macd:.2f}")
-    embed.add_field(name="SMA (20)", value=f"{sma:.2f}")
+    embed.add_field(name="SMA(20)", value=f"{sma:.2f}")
 
     await interaction.response.send_message(embed=embed)
+
 
 # -----------------------------
 # /signal
 # -----------------------------
 @bot.tree.command(name="signal", description="Buy/Sell signal")
 async def signal(interaction: discord.Interaction, symbol: str):
-    data = get_data(symbol, period="3mo")
+    data = get_data(symbol, "1h", "3mo")
 
     if data is None:
         return await interaction.response.send_message(
-            embed=discord.Embed(description="❌ No data", color=EMBED_COLOR)
+            embed=discord.Embed(description="❌ No data", color=COLOR)
         )
 
     rsi = RSIIndicator(data["Close"]).rsi().iloc[-1]
 
     if rsi < 30:
-        signal_text = "🟢 BUY ZONE"
+        msg = "🟢 BUY ZONE"
     elif rsi > 70:
-        signal_text = "🔴 SELL ZONE"
+        msg = "🔴 SELL ZONE"
     else:
-        signal_text = "🟡 NEUTRAL"
+        msg = "🟡 NEUTRAL"
 
     embed = discord.Embed(
         title=f"{symbol.upper()} Signal",
-        description=f"{signal_text}\nRSI: {rsi:.2f}",
-        color=EMBED_COLOR
+        description=f"{msg}\nRSI: {rsi:.2f}",
+        color=COLOR
     )
 
     await interaction.response.send_message(embed=embed)
 
+
 # -----------------------------
 # /forex
 # -----------------------------
-@bot.tree.command(name="forex", description="Forex price")
+@bot.tree.command(name="forex", description="Forex prices")
 async def forex(interaction: discord.Interaction, pair: str):
     symbol = pair.upper() + "=X"
     data = yf.Ticker(symbol).history(period="1d")
 
     if data.empty:
         return await interaction.response.send_message(
-            embed=discord.Embed(description="❌ Invalid pair", color=EMBED_COLOR)
+            embed=discord.Embed(description="❌ Invalid pair", color=COLOR)
         )
 
     price = data["Close"].iloc[-1]
@@ -211,13 +233,14 @@ async def forex(interaction: discord.Interaction, pair: str):
     embed = discord.Embed(
         title=f"💱 {pair.upper()}",
         description=f"{price:.5f}",
-        color=EMBED_COLOR
+        color=COLOR
     )
 
     await interaction.response.send_message(embed=embed)
 
+
 # -----------------------------
-# /commodity
+# /commodity (oil / gold)
 # -----------------------------
 @bot.tree.command(name="commodity", description="Oil or Gold")
 async def commodity(interaction: discord.Interaction, name: str):
@@ -226,19 +249,26 @@ async def commodity(interaction: discord.Interaction, name: str):
     symbol = mapping.get(name.lower())
     if not symbol:
         return await interaction.response.send_message(
-            embed=discord.Embed(description="Use oil or gold", color=EMBED_COLOR)
+            embed=discord.Embed(description="Use oil or gold", color=COLOR)
         )
 
     data = yf.Ticker(symbol).history(period="1d")
+
+    if data.empty:
+        return await interaction.response.send_message(
+            embed=discord.Embed(description="❌ No data", color=COLOR)
+        )
+
     price = data["Close"].iloc[-1]
 
     embed = discord.Embed(
         title=f"📦 {name.upper()}",
         description=f"${price:.2f}",
-        color=EMBED_COLOR
+        color=COLOR
     )
 
     await interaction.response.send_message(embed=embed)
+
 
 # -----------------------------
 # /options
@@ -256,11 +286,18 @@ async def options(interaction: discord.Interaction, symbol: str):
 
         embed = discord.Embed(
             title=f"📉 {symbol.upper()} Options ({exp})",
-            color=EMBED_COLOR
+            color=COLOR
         )
 
-        calls_text = "\n".join([f"{r['strike']} | {r['lastPrice']} | vol {r['volume']}" for _, r in calls.iterrows()])
-        puts_text = "\n".join([f"{r['strike']} | {r['lastPrice']} | vol {r['volume']}" for _, r in puts.iterrows()])
+        calls_text = "\n".join(
+            f"{r['strike']} | {r['lastPrice']} | vol {r['volume']}"
+            for _, r in calls.iterrows()
+        )
+
+        puts_text = "\n".join(
+            f"{r['strike']} | {r['lastPrice']} | vol {r['volume']}"
+            for _, r in puts.iterrows()
+        )
 
         embed.add_field(name="CALLS", value=calls_text or "None", inline=False)
         embed.add_field(name="PUTS", value=puts_text or "None", inline=False)
@@ -269,8 +306,9 @@ async def options(interaction: discord.Interaction, symbol: str):
 
     except:
         await interaction.response.send_message(
-            embed=discord.Embed(description="❌ Options unavailable", color=EMBED_COLOR)
+            embed=discord.Embed(description="❌ Options unavailable", color=COLOR)
         )
+
 
 # -----------------------------
 bot.run(TOKEN)
